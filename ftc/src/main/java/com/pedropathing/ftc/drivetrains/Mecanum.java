@@ -217,7 +217,7 @@ public class Mecanum extends Drivetrain {
     public void runDrive(double[] drivePowers) {
         for (int i = 0; i < motors.size(); i++) {
             if (Math.abs(motors.get(i).getPower() - drivePowers[i]) > motorCachingThreshold) {
-                motors.get(i).setPower(drivePowers[i]);
+                motors.get(i).setVelocity(drivePowers[i]*384.5);
             }
         }
     }

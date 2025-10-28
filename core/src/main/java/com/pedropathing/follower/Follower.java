@@ -21,6 +21,8 @@ import com.pedropathing.paths.PathChain;
 import com.pedropathing.math.Vector;
 import com.pedropathing.util.Timer;
 
+import java.util.concurrent.locks.ReentrantLock;
+
 /**
  * This is the Follower class. It handles the actual following of the paths and all the on-the-fly
  * calculations that are relevant for movement.
@@ -61,6 +63,9 @@ public class Follower {
     private Timer zeroVelocityDetectedTimer = null;
     private Runnable resetFollowing = null;
 
+    private static Follower INSTANCE;
+    private static final ReentrantLock BuildLock = new ReentrantLock();
+
     /**
      * This creates a new Follower given a HardwareMap.
      * @param constants FollowerConstants to use
@@ -68,7 +73,7 @@ public class Follower {
      * @param drivetrain Drivetrain to use
      * @param pathConstraints PathConstraints to use
      */
-    public Follower(FollowerConstants constants, Localizer localizer, Drivetrain drivetrain, PathConstraints pathConstraints) {
+    private Follower(FollowerConstants constants, Localizer localizer, Drivetrain drivetrain, PathConstraints pathConstraints) {
         this.constants = constants;
         this.pathConstraints = pathConstraints;
 
@@ -86,6 +91,17 @@ public class Follower {
         automaticHoldEnd = constants.automaticHoldEnd;
 
         breakFollowing();
+    }
+    public static Follower getINSTANCE(FollowerConstants constants, Localizer localizer, Drivetrain drivetrain, PathConstraints pathConstraints) {
+        BuildLock.lock();
+        try {
+            if (INSTANCE == null) {
+                INSTANCE = new Follower(constants, localizer, drivetrain, pathConstraints);
+            }
+            return INSTANCE;
+        } finally {
+            BuildLock.unlock();
+        }
     }
 
     public void updateConstants() {

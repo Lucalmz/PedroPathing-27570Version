@@ -85,6 +85,6 @@ public class FollowerBuilder {
     }
 
     public Follower build() {
-        return new Follower(constants, localizer, drivetrain, constraints);
+        return Follower.getINSTANCE(constants, localizer, drivetrain, constraints);
     }
 }
