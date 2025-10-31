@@ -6,7 +6,7 @@ plugins {
 }
 
 subprojects {
-    group = "com.pedropathing"
+    group = "com.pedropathing-local"
     version = property("version") as String
 }
 
