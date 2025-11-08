@@ -161,13 +161,51 @@ public class VectorCalculator {
     }
 
     /**
-     * This returns a Vector in the direction the robot must go to move along the path. This Vector
-     * takes into account the projected position of the robot to calculate how much power is needed.
-     * <p>
-     * Note: This vector is clamped to be at most 1 in magnitude.
+     * A specific update method for hybrid drive mode (manual translation, automatic heading).
+     * It calculates the heading correction vector based on the given error and sets the translational
+     * vector from the provided manual input. This method replaces the overly simple version.
      *
-     * @return returns the drive vector.
+     * @param teleopDriveVector The manually controlled drive vector (should be field-centric from Follower).
+     * @param headingError The current heading error in radians.
+     * @param currentPose The current pose of the robot.
+     * @param headingGoal The target heading of the robot.
+     * @param maxPowerScaling The maximum power scaling factor (0 to 1).
      */
+    public void updateForHybridDrive(Vector teleopDriveVector, double headingError, Pose currentPose, double headingGoal, double maxPowerScaling) {
+        // Part 1: Calculate Heading Correction (logic copied from getHeadingVector())
+        // This ensures consistent PID behavior with path following mode.
+        Vector calculatedHeadingVector;
+        if (Math.abs(headingError) < headingPIDFSwitch && useSecondaryHeadingPID) {
+            secondaryHeadingPIDF.updateFeedForwardInput(MathFunctions.getTurnDirection(currentPose.getHeading(), headingGoal));
+            secondaryHeadingPIDF.updateError(headingError);
+            calculatedHeadingVector = new Vector(MathFunctions.clamp(secondaryHeadingPIDF.run(), -maxPowerScaling, maxPowerScaling), currentPose.getHeading());
+        } else {
+            headingPIDF.updateFeedForwardInput(MathFunctions.getTurnDirection(currentPose.getHeading(), headingGoal));
+            headingPIDF.updateError(headingError);
+            calculatedHeadingVector = new Vector(MathFunctions.clamp(headingPIDF.run(), -maxPowerScaling, maxPowerScaling), currentPose.getHeading());
+        }
+        this.headingVector = calculatedHeadingVector;
+
+        // Part 2: Set the Manual Drive Vector
+        // We assume the incoming vector is already processed (field-centric, scaled, etc.) by the Follower.
+        this.teleopDriveVector = teleopDriveVector;
+
+        // Part 3: Clear other vectors that are not used in this mode to prevent side effects.
+        this.driveVector = new Vector();
+        this.correctiveVector = new Vector();
+        this.translationalVector = new Vector();
+        this.centripetalVector = new Vector();
+        this.teleopHeadingVector = new Vector(); // Manual turn input is zero in this mode.
+    }
+
+        /**
+         * This returns a Vector in the direction the robot must go to move along the path. This Vector
+         * takes into account the projected position of the robot to calculate how much power is needed.
+         * <p>
+         * Note: This vector is clamped to be at most 1 in magnitude.
+         *
+         * @return returns the drive vector.
+         */
     public Vector getDriveVector() {
         if (!useDrive) return new Vector();
 

@@ -47,7 +47,7 @@ public class Follower {
 
     private int BEZIER_CURVE_SEARCH_LIMIT;
     private int chainIndex;
-    private boolean followingPathChain, holdingPosition, isBusy, isTurning, reachedParametricPathEnd, holdPositionAtEnd, manualDrive;
+    private volatile boolean followingPathChain, holdingPosition, isBusy, isTurning, reachedParametricPathEnd, holdPositionAtEnd, manualDrive;
     private boolean automaticHoldEnd, useHoldScaling = true;
     private double globalMaxPower = 1, centripetalScaling;
     private double holdPointTranslationalScaling;
@@ -60,6 +60,11 @@ public class Follower {
     public boolean useDrive = true;
     private Timer zeroVelocityDetectedTimer = null;
     private Runnable resetFollowing = null;
+    private volatile boolean hybridDriveMode;
+    private double hybridTargetHeading;
+    private double hybridForwardInput;
+    private double hybridStrafeInput;
+    private boolean hybridIsRobotCentric;
 
     /**
      * This creates a new Follower given a HardwareMap.
@@ -348,6 +353,37 @@ public class Follower {
         drivetrain.startTeleopDrive(useBrakeMode);
     }
 
+    /**
+     * Starts the hybrid drive mode, where translation is manual and heading is automatic.
+     * Call this once to enter the mode. Then, in your loop, call setHybridDriveInputs() and update().
+     * @param initialTargetHeading The initial heading in radians for the robot to hold.
+     * @author Luca Li 27570
+     */
+    public void startHybridDrive(double initialTargetHeading) {
+        breakFollowing(); // Reset everything before starting a new mode
+        this.hybridDriveMode = true;
+        this.hybridTargetHeading = initialTargetHeading;
+        this.hybridIsRobotCentric = true;
+    }
+    /**
+     * Updates the manual driving inputs for the hybrid drive mode.
+     * Call this continuously in your loop.
+     * @param forward The forward/backward joystick input [-1, 1].
+     * @param strafe The left/right strafe joystick input [-1, 1].
+     * @param targetHeading The target heading in radians.
+     * @author Luca Li 27570
+     */
+    public void setHybridDriveInputs(double forward, double strafe,double targetHeading) {
+        if (hybridDriveMode) {
+            this.hybridForwardInput = forward;
+            this.hybridStrafeInput = strafe;
+            this.hybridTargetHeading = targetHeading;
+        }
+    }
+    public boolean isHybridDriveRunning(){
+        return hybridDriveMode;
+    }
+
     public void startTeleOpDrive(boolean useBrakeMode) {
         startTeleopDrive(useBrakeMode);
     }
@@ -440,7 +476,24 @@ public class Follower {
         updatePose();
         updateDrivetrain();
 
+        if (hybridDriveMode) {
+            double headingError = MathFunctions.getSmallestAngleDifference(currentPose.getHeading(), hybridTargetHeading);
 
+            Vector driveVector = new Vector();
+            driveVector.setOrthogonalComponents(hybridForwardInput, hybridStrafeInput);
+            driveVector.setMagnitude(MathFunctions.clamp(driveVector.getMagnitude(), 0, 1));
+            driveVector.rotateVector(-currentPose.getHeading());
+
+            vectorCalculator.updateForHybridDrive(driveVector, headingError, currentPose, hybridTargetHeading, getMaxPowerScaling());
+
+            drivetrain.runDrive(
+                    vectorCalculator.getTeleopDriveVector(), // 手动平移
+                    vectorCalculator.getHeadingVector(),      // 自动旋转
+                    new Vector(),                             // 路径驱动向量（此处不用）
+                    currentPose.getHeading()
+            );
+            return;
+        }
         if (manualDrive) {
             previousClosestPose = closestPose;
             closestPose = new PathPoint();
@@ -555,6 +608,7 @@ public class Follower {
         errorCalculator.breakFollowing();
         vectorCalculator.breakFollowing();
         drivetrain.breakFollowing();
+        hybridDriveMode = false;
         manualDrive = false;
         holdingPosition = false;
         isBusy = false;
