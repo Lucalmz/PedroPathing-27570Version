@@ -5,6 +5,7 @@ import com.pedropathing.VectorCalculator;
 import com.pedropathing.control.FilteredPIDFCoefficients;
 import com.pedropathing.control.PIDFCoefficients;
 import com.pedropathing.Drivetrain;
+import com.pedropathing.control.PIDFController;
 import com.pedropathing.paths.PathConstraints;
 import com.pedropathing.paths.PathPoint;
 import com.pedropathing.util.PoseHistory;
@@ -60,11 +61,8 @@ public class Follower {
     public boolean useDrive = true;
     private Timer zeroVelocityDetectedTimer = null;
     private Runnable resetFollowing = null;
-    private volatile boolean hybridDriveMode;
-    private double hybridTargetHeading;
-    private double hybridForwardInput;
-    private double hybridStrafeInput;
-    private boolean hybridIsRobotCentric;
+    private double controlOffsetRadians = 0;
+    private volatile boolean tunerStyleHybridMode = false;
 
     /**
      * This creates a new Follower given a HardwareMap.
@@ -352,38 +350,80 @@ public class Follower {
         update();
         drivetrain.startTeleopDrive(useBrakeMode);
     }
-
-    /**
-     * Starts the hybrid drive mode, where translation is manual and heading is automatic.
-     * Call this once to enter the mode. Then, in your loop, call setHybridDriveInputs() and update().
-     * @param initialTargetHeading The initial heading in radians for the robot to hold.
-     * @author Luca Li 27570
-     */
-    public void startHybridDrive(double initialTargetHeading) {
-        breakFollowing(); // Reset everything before starting a new mode
-        this.hybridDriveMode = true;
-        this.hybridTargetHeading = initialTargetHeading;
-        this.hybridIsRobotCentric = true;
+    public boolean isHybridDrive() {
+        return this.tunerStyleHybridMode;
     }
     /**
-     * Updates the manual driving inputs for the hybrid drive mode.
-     * Call this continuously in your loop.
-     * @param forward The forward/backward joystick input [-1, 1].
-     * @param strafe The left/right strafe joystick input [-1, 1].
-     * @param targetHeading The target heading in radians.
-     * @author Luca Li 27570
+     * 启动基于 HeadingTuner 稳定逻辑的混合驱动模式。
+     * 只需在进入模式时调用一次。
      */
-    public void setHybridDriveInputs(double forward, double strafe,double targetHeading) {
-        if (hybridDriveMode) {
-            this.hybridForwardInput = forward;
-            this.hybridStrafeInput = strafe;
-            this.hybridTargetHeading = targetHeading;
-        }
+    public void startTunerStyleHybridDrive(double controlOffsetRadians) {
+        breakFollowing();
+        this.tunerStyleHybridMode = true;
+        this.controlOffsetRadians = controlOffsetRadians;
+        // 像Tuner一样，只激活我们需要的PID
+        deactivateAllPIDFs();
+        activateHeading();
+        activateDrive(); // 我们需要Drive Vector来承载手动平移
     }
-    public boolean isHybridDriveRunning(){
-        return hybridDriveMode;
-    }
+    /**
+     * 【【【最终的、正确的方法】】】
+     * 在循环中更新基于Tuner逻辑的混合驱动。
+     *
+     * @param forward The forward/backward joystick input for field-centric control.
+     * @param strafe The left/right strafe joystick input for field-centric control.
+     * @param targetHeading The desired heading in radians for the robot to automatically hold.
+     */
+    public void updateTunerStyleHybridDrive(double forward, double strafe, double targetHeading) {
+        if (!tunerStyleHybridMode) return;
 
+        // --- 步骤 1: 准备工作 ---
+        updatePose();
+        updateDrivetrain();
+
+        // --- 步骤 2: 计算误差 ---
+        double headingError = MathFunctions.getTurnDirection(currentPose.getHeading(), targetHeading)
+                * MathFunctions.getSmallestAngleDifference(currentPose.getHeading(), targetHeading);
+        // 在这个模式下，平移误差永远是0
+        Vector translationalError = new Vector();
+        // DriveError也不需要，设为一个不会触发PID的值
+        double driveError = -1;
+
+        // --- 步骤 3: 【【【核心】】】为 VectorCalculator 提供一个纯净的“自动寻路”上下文 ---
+        vectorCalculator.update(
+                true,  // useDrive
+                true,  // useHeading
+                false, // useTranslational
+                false, // useCentripetal
+                false, // teleopDrive
+                0, getMaxPowerScaling(), false, 0,
+                currentPose, null, getVelocity(), null, null,
+                driveError, translationalError, headingError, targetHeading
+        );
+
+        // --- 步骤 4: 获取自动计算的、强大的转向向量 ---
+        Vector finalHeadingVector = getHeadingVector();
+
+        // --- 步骤 5: 【【【关键创新】】】将手动输入伪装成一个 DriveVector ---
+        // 1. 创建场地坐标系的平移向量
+        Vector manualDriveVector = new Vector();
+        manualDriveVector.setOrthogonalComponents(strafe, forward);
+        manualDriveVector.setMagnitude(MathFunctions.clamp(manualDriveVector.getMagnitude(), 0, 1));
+
+        manualDriveVector.rotateVector(controlOffsetRadians);
+        // 2. 将其转换为机器人坐标系
+        manualDriveVector.rotateVector(-currentPose.getHeading());
+
+        // --- 步骤 6: 组合并驱动 ---
+        // Drivetrain需要的是三个独立的向量：平移修正(corrective)，转向(heading)，和前进(drive)
+        // 在我们的模式下，平移修正是0，前进由手动控制，转向由PID自动控制
+        drivetrain.runDrive(
+                new Vector(),        // Corrective Vector (strafe correction), we set it to zero
+                finalHeadingVector,  // 【自动】转向
+                manualDriveVector,   // 【手动】伪装的前进/后退/侧滑向量
+                currentPose.getHeading()
+        );
+    }
     public void startTeleOpDrive(boolean useBrakeMode) {
         startTeleopDrive(useBrakeMode);
     }
@@ -471,29 +511,13 @@ public class Follower {
      * This also updates all the Follower's PIDFs, which updates the motor powers.
      */
     public void update() {
+        if(tunerStyleHybridMode){
+            return;
+        }
         poseHistory.update();
         updateConstants();
         updatePose();
         updateDrivetrain();
-
-        if (hybridDriveMode) {
-            double headingError = MathFunctions.getSmallestAngleDifference(currentPose.getHeading(), hybridTargetHeading);
-
-            Vector driveVector = new Vector();
-            driveVector.setOrthogonalComponents(hybridForwardInput, hybridStrafeInput);
-            driveVector.setMagnitude(MathFunctions.clamp(driveVector.getMagnitude(), 0, 1));
-            driveVector.rotateVector(-currentPose.getHeading());
-
-            vectorCalculator.updateForHybridDrive(driveVector, headingError, currentPose, hybridTargetHeading, getMaxPowerScaling());
-
-            drivetrain.runDrive(
-                    vectorCalculator.getTeleopDriveVector(), // 手动平移
-                    vectorCalculator.getHeadingVector(),      // 自动旋转
-                    new Vector(),                             // 路径驱动向量（此处不用）
-                    currentPose.getHeading()
-            );
-            return;
-        }
         if (manualDrive) {
             previousClosestPose = closestPose;
             closestPose = new PathPoint();
@@ -608,7 +632,7 @@ public class Follower {
         errorCalculator.breakFollowing();
         vectorCalculator.breakFollowing();
         drivetrain.breakFollowing();
-        hybridDriveMode = false;
+        this.tunerStyleHybridMode = false;
         manualDrive = false;
         holdingPosition = false;
         isBusy = false;
